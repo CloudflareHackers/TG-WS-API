@@ -32,7 +32,7 @@ export default {
     // Parse: first segment = target host, rest = path
     const segments = path.split('/');
     const targetHost = segments[0];
-    const targetPath = segments.slice(1).join('/');
+    const targetPath = segments.slice(1).join('/') || 'apiws';
 
     // Validate it's a Telegram domain
     const allowedPattern = /^[a-z0-9\-]+\.(?:web\.)?telegram\.org$/i;
@@ -58,7 +58,7 @@ export default {
     // WebSocket upgrade
     const upgradeHeader = request.headers.get('Upgrade');
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
-      return handleWebSocketUpgrade(targetHost, targetPath);
+      return handleWebSocketUpgrade(targetHost, targetPath, request);
     }
 
     // Regular HTTP proxy (for non-WS requests)
@@ -80,82 +80,96 @@ export default {
 
 /**
  * Handle WebSocket upgrade.
- * Per CF docs: use fetch() to make a WebSocket connection to the upstream,
- * then use WebSocketPair to create a client-facing socket and bridge them.
+ * Connects upstream to Telegram via fetch() with Upgrade: websocket,
+ * then bridges using WebSocketPair.
  */
-async function handleWebSocketUpgrade(targetHost, targetPath) {
-  // Connect to Telegram upstream via fetch + Upgrade header
-  // Per CF Workers docs, use https:// with Upgrade: websocket
+async function handleWebSocketUpgrade(targetHost, targetPath, originalRequest) {
   const upstreamUrl = `https://${targetHost}/${targetPath}`;
 
-  const upstreamResponse = await fetch(upstreamUrl, {
-    headers: {
+  try {
+    // Build headers for upstream - include Sec-WebSocket-Protocol if present
+    const upstreamHeaders = {
       'Upgrade': 'websocket',
-    },
-  });
+    };
 
-  // Check if we got a WebSocket back
-  const upstream = upstreamResponse.webSocket;
-  if (!upstream) {
-    return new Response(`Failed to establish WebSocket to ${targetHost}/${targetPath}. Status: ${upstreamResponse.status}`, {
+    // Forward Sec-WebSocket-Protocol (Telegram requires 'binary')
+    const protocol = originalRequest.headers.get('Sec-WebSocket-Protocol');
+    if (protocol) {
+      upstreamHeaders['Sec-WebSocket-Protocol'] = protocol;
+    }
+
+    const upstreamResponse = await fetch(upstreamUrl, {
+      headers: upstreamHeaders,
+    });
+
+    // Check if we got a WebSocket back
+    const upstream = upstreamResponse.webSocket;
+    if (!upstream) {
+      const body = await upstreamResponse.text().catch(() => '');
+      return new Response(JSON.stringify({
+        error: 'WebSocket upgrade failed',
+        targetHost,
+        targetPath,
+        upstreamStatus: upstreamResponse.status,
+        upstreamBody: body.substring(0, 200),
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      });
+    }
+
+    // Create a WebSocketPair for the client
+    const webSocketPair = new WebSocketPair();
+    const [client, server] = Object.values(webSocketPair);
+
+    // Accept both sides
+    upstream.accept();
+    server.accept();
+
+    // Bridge: upstream ↔ client (bidirectional)
+    upstream.addEventListener('message', event => {
+      try { server.send(event.data); } catch {}
+    });
+    server.addEventListener('message', event => {
+      try { upstream.send(event.data); } catch {}
+    });
+
+    upstream.addEventListener('close', event => {
+      try { server.close(event.code || 1000, event.reason || ''); } catch {}
+    });
+    server.addEventListener('close', event => {
+      try { upstream.close(event.code || 1000, event.reason || ''); } catch {}
+    });
+
+    upstream.addEventListener('error', () => {
+      try { server.close(1011, 'upstream error'); } catch {}
+    });
+    server.addEventListener('error', () => {
+      try { upstream.close(1011, 'client error'); } catch {}
+    });
+
+    // Build response headers
+    const responseHeaders = {};
+    if (protocol) {
+      responseHeaders['Sec-WebSocket-Protocol'] = protocol;
+    }
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+      headers: responseHeaders,
+    });
+
+  } catch (err) {
+    return new Response(JSON.stringify({
+      error: 'WS Proxy error',
+      message: err.message,
+      stack: err.stack,
+      targetHost,
+      targetPath,
+    }), {
       status: 502,
-      headers: { 'Access-Control-Allow-Origin': '*' },
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
     });
   }
-
-  // Create a WebSocketPair for the client
-  const webSocketPair = new WebSocketPair();
-  const [client, server] = Object.values(webSocketPair);
-
-  // Accept both sides
-  upstream.accept();
-  server.accept();
-
-  // Bridge: upstream → client
-  upstream.addEventListener('message', event => {
-    try {
-      server.send(event.data);
-    } catch (err) {
-      // Client disconnected
-    }
-  });
-
-  upstream.addEventListener('close', event => {
-    try {
-      server.close(event.code || 1000, event.reason || 'upstream closed');
-    } catch {}
-  });
-
-  upstream.addEventListener('error', event => {
-    try {
-      server.close(1011, 'upstream error');
-    } catch {}
-  });
-
-  // Bridge: client → upstream
-  server.addEventListener('message', event => {
-    try {
-      upstream.send(event.data);
-    } catch (err) {
-      // Upstream disconnected
-    }
-  });
-
-  server.addEventListener('close', event => {
-    try {
-      upstream.close(event.code || 1000, event.reason || 'client closed');
-    } catch {}
-  });
-
-  server.addEventListener('error', event => {
-    try {
-      upstream.close(1011, 'client error');
-    } catch {}
-  });
-
-  // Return the client WebSocket as the response
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
 }
