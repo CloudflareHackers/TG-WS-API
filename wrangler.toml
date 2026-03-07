@@ -1,6 +1,8 @@
 name = "tg-ws-api"
 main = "src/index.js"
 compatibility_date = "2026-03-01"
+account_id = "d7fd792641c0f950e8e4979eac0cfe5a"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
