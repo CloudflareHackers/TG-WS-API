@@ -9,7 +9,7 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["WebSocketProxy"]
+new_sqlite_classes = ["WebSocketProxy"]
 
 [vars]
 ENVIRONMENT = "production"
