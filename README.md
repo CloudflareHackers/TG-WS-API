@@ -2,7 +2,7 @@
 
 **Cloudflare Worker + Durable Objects** — WebSocket proxy for Telegram MTProto connections.
 
-Allows browser-based Telegram clients (like [TGCFWorkersDLBot](https://github.com/CloudflareHackers/TGCFWorkersDLBot)) to connect to Telegram servers through Cloudflare's network when direct WebSocket connections are blocked.
+Allows browser-based Telegram clients (like [Telegram Web A (MOD)](https://github.com/PBhadoo/telegram-tt)) to connect to Telegram servers through Cloudflare's network when direct WebSocket connections are blocked.
 
 ## One-Click Deploy
 
@@ -22,19 +22,65 @@ Browser (GramJS) → wss://your-worker.workers.dev/pluto.web.telegram.org/apiws 
 
 ## Usage
 
-Once deployed, set your worker domain in the TGCFWorkersDLBot settings:
+Once deployed, set your worker domain in the [Telegram Web A (MOD)](https://github.com/PBhadoo/telegram-tt) proxy settings:
 
 ```
-Proxy Worker Domain: tg-ws-api.your-account.workers.dev
+Proxy Domain: tg-ws-api.your-account.workers.dev
+```
+
+Or set it as an environment variable during build:
+```
+PROXY_URL=tg-ws-api.your-account.workers.dev
 ```
 
 ## Routes
 
 | Route | Description |
 |-------|-------------|
-| `GET /` | Health check (JSON) |
+| `GET /` | Health check (JSON) — includes DC mapping info |
 | `wss://<domain>/<telegram-host>/<path>` | WebSocket proxy to Telegram |
-| `wss://<domain>/pluto.web.telegram.org/apiws` | Example: proxy to DC pluto |
+| `wss://<domain>/pluto.web.telegram.org/apiws` | Example: proxy to DC1 (pluto) |
+
+## Smart Location Hints (Auto DC Placement)
+
+Durable Objects are automatically placed **near the target Telegram DC** for lowest latency using [Cloudflare Location Hints](https://developers.cloudflare.com/durable-objects/reference/data-location/).
+
+### Telegram DC → Cloudflare Region Mapping
+
+| Telegram DC | Hosts | Physical Location | CF Location Hint |
+|---|---|---|---|
+| DC1 (Pluto) | `zws1.web.telegram.org` | Miami, USA | `enam` |
+| DC2 (Venus) | `zws2.web.telegram.org` | Amsterdam, NL | `weur` |
+| DC3 (Aurora) | `zws3.web.telegram.org` | Miami, USA | `enam` |
+| DC4 (Vesta) | `zws4.web.telegram.org` | Amsterdam, NL | `weur` |
+| DC5 (Flora) | `zws5.web.telegram.org` | Singapore | `apac` |
+
+### How It Works
+
+- **Automatic**: The worker detects which Telegram DC you're connecting to and places the DO near it
+- **Manual Override**: Add `?locationHint=<hint>` to force a specific region
+
+```
+wss://your-worker.workers.dev/zws2.web.telegram.org/apiws              → Auto: weur (Amsterdam)
+wss://your-worker.workers.dev/zws5.web.telegram.org/apiws              → Auto: apac (Singapore)
+wss://your-worker.workers.dev/zws1.web.telegram.org/apiws?locationHint=wnam  → Override: wnam
+```
+
+### Available Location Hints
+
+| Hint | Region |
+|------|--------|
+| `wnam` | Western North America |
+| `enam` | Eastern North America |
+| `sam` | South America |
+| `weur` | Western Europe |
+| `eeur` | Eastern Europe |
+| `apac` | Asia Pacific |
+| `oc` | Oceania |
+| `afr` | Africa |
+| `me` | Middle East |
+
+> **Note**: Location hints are *soft preferences* — Cloudflare tries its best but doesn't guarantee exact placement.
 
 ## Security
 
@@ -52,8 +98,9 @@ npx wrangler deploy
 
 ## Architecture
 
-- **Worker**: Routes requests, validates domains, handles CORS
+- **Worker**: Routes requests, validates domains, handles CORS, auto-detects DC location
 - **Durable Object (`WebSocketProxy`)**: Holds persistent WebSocket pairs (client ↔ upstream)
+- **Location Hints**: DOs placed near Telegram DCs for optimal latency
 - **No external dependencies**: Pure Cloudflare Workers runtime
 
 ### Workers Paid Plan ($5/month)

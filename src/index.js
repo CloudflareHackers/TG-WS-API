@@ -4,10 +4,74 @@
  * Uses Durable Objects to hold persistent WebSocket connections between
  * the browser client and Telegram's MTProto servers.
  * 
+ * Location hints are automatically set based on the target Telegram DC
+ * for optimal latency (DO is placed near Telegram's server, not the user).
+ * 
  * Routes:
  *   wss://<worker-domain>/<telegram-host>/<path>
  *   wss://<worker-domain>/pluto.web.telegram.org/apiws
+ *   wss://<worker-domain>/pluto.web.telegram.org/apiws?locationHint=enam
  */
+
+// ===== Telegram DC → CF Location Hint Mapping =====
+// Telegram DC locations:
+//   DC1 (pluto/zws1) → Miami, USA
+//   DC2 (venus/zws2) → Amsterdam, Netherlands
+//   DC3 (aurora/zws3) → Miami, USA
+//   DC4 (vesta/zws4) → Amsterdam, Netherlands
+//   DC5 (flora/zws5) → Singapore
+const DC_LOCATION_MAP = {
+  'zws1': 'enam',      // DC1 → Eastern North America (Miami)
+  'zws1-1': 'enam',
+  'zws2': 'weur',      // DC2 → Western Europe (Amsterdam)
+  'zws2-1': 'weur',
+  'zws3': 'enam',      // DC3 → Eastern North America (Miami)
+  'zws3-1': 'enam',
+  'zws4': 'weur',      // DC4 → Western Europe (Amsterdam)
+  'zws4-1': 'weur',
+  'zws5': 'apac',      // DC5 → Asia Pacific (Singapore)
+  'zws5-1': 'apac',
+  'pluto': 'enam',     // DC1 aliases
+  'venus': 'weur',     // DC2 aliases
+  'aurora': 'enam',    // DC3 aliases
+  'vesta': 'weur',     // DC4 aliases
+  'flora': 'apac',     // DC5 aliases
+};
+
+// Valid CF location hints
+const VALID_HINTS = new Set([
+  'wnam', 'enam', 'sam', 'weur', 'eeur', 'apac', 'oc', 'afr', 'me',
+]);
+
+/**
+ * Determine the best location hint for a Durable Object based on the target Telegram host.
+ * @param {string} targetHost - e.g. "zws2.web.telegram.org" or "venus-1.web.telegram.org"
+ * @param {string|null} manualHint - Optional manual override from query param
+ * @returns {string|undefined} Location hint or undefined (let CF decide)
+ */
+function getLocationHint(targetHost, manualHint) {
+  // Manual override takes priority
+  if (manualHint && VALID_HINTS.has(manualHint.toLowerCase())) {
+    return manualHint.toLowerCase();
+  }
+
+  // Extract the DC prefix from the hostname (e.g. "zws2" from "zws2.web.telegram.org")
+  const dcPrefix = targetHost.split('.')[0].toLowerCase();
+
+  // Direct match
+  if (DC_LOCATION_MAP[dcPrefix]) {
+    return DC_LOCATION_MAP[dcPrefix];
+  }
+
+  // Try without trailing numbers (e.g. "zws2-1" → "zws2")
+  const basePrefix = dcPrefix.replace(/-\d+$/, '');
+  if (DC_LOCATION_MAP[basePrefix]) {
+    return DC_LOCATION_MAP[basePrefix];
+  }
+
+  // No match — let CF decide
+  return undefined;
+}
 
 // ===== Worker Entry Point =====
 export default {
@@ -24,6 +88,11 @@ export default {
         description: 'Telegram WebSocket Proxy for MTProto',
         usage: 'wss://<domain>/<telegram-host>/<path>',
         example: 'wss://<domain>/pluto.web.telegram.org/apiws',
+        locationHints: {
+          description: 'Auto-detected based on Telegram DC, or override via ?locationHint=<hint>',
+          validHints: [...VALID_HINTS],
+          dcMapping: DC_LOCATION_MAP,
+        },
       }), {
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
       });
@@ -58,14 +127,22 @@ export default {
     // WebSocket upgrade — route to Durable Object
     const upgradeHeader = request.headers.get('Upgrade');
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
-      // Create a unique DO instance per connection
-      const id = env.WS_PROXY.newUniqueId();
+      // Determine location hint (auto from DC or manual override)
+      const manualHint = url.searchParams.get('locationHint');
+      const locationHint = getLocationHint(targetHost, manualHint);
+
+      // Create a unique DO instance per connection with optional location hint
+      const idOptions = locationHint ? { locationHint } : {};
+      const id = env.WS_PROXY.newUniqueId(idOptions);
       const stub = env.WS_PROXY.get(id);
       
       // Forward to DO with target info in URL
       const doUrl = new URL(request.url);
       doUrl.searchParams.set('targetHost', targetHost);
       doUrl.searchParams.set('targetPath', targetPath);
+      if (locationHint) {
+        doUrl.searchParams.set('_locationHint', locationHint);
+      }
       
       return stub.fetch(new Request(doUrl.toString(), request));
     }
