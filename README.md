@@ -62,16 +62,7 @@ npx wrangler deploy
 Works out of the box with `new_sqlite_classes` (SQLite-backed Durable Objects).
 
 ### Workers Paid Plan ($5/month)
-For higher performance and limits, upgrade to the paid plan and switch to standard Durable Objects:
-
-In `wrangler.toml`, change:
-```toml
-# Free plan (default):
-new_sqlite_classes = ["WebSocketProxy"]
-
-# Paid plan (better performance):
-new_classes = ["WebSocketProxy"]
-```
+For higher performance and limits, upgrade to the paid plan.
 
 **Paid plan benefits:**
 - ⚡ **Higher request limits** — 10M+ requests/month (free: 100K/day)
