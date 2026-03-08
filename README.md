@@ -56,11 +56,6 @@ npx wrangler deploy
 - **Durable Object (`WebSocketProxy`)**: Holds persistent WebSocket pairs (client ↔ upstream)
 - **No external dependencies**: Pure Cloudflare Workers runtime
 
-## Free vs Paid Plan
-
-### Free Plan (Default)
-Works out of the box with `new_sqlite_classes` (SQLite-backed Durable Objects).
-
 ### Workers Paid Plan ($5/month)
 For higher performance and limits, upgrade to the paid plan.
 
